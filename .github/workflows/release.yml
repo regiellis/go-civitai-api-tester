@@ -1,0 +1,176 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
+
+permissions:
+  contents: write  # Required to create releases and upload assets
+  packages: write  # Required for package registry access
+  actions: read    # Required to read workflow artifacts
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - os: linux
+            arch: arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+          - os: windows
+            arch: amd64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - os: windows
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            ext: ".exe"
+          - os: darwin
+            arch: amd64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+          - os: darwin
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'  # Adjust to your Go version
+          check-latest: true
+
+      - name: Get dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p builds
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o builds/civitai-tester-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} \
+            main.go config.go
+
+      - name: Create archive
+        run: |
+          cd builds
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            zip -r civitai-tester-${{ matrix.os }}-${{ matrix.arch }}.zip \
+              civitai-tester-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} \
+              ../config.example.json \
+              ../README.md \
+              ../static/
+          else
+            tar -czf civitai-tester-${{ matrix.os }}-${{ matrix.arch }}.tar.gz \
+              civitai-tester-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} \
+              ../config.example.json \
+              ../README.md \
+              ../static/
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: civitai-tester-${{ matrix.os }}-${{ matrix.arch }}
+          path: builds/civitai-tester-${{ matrix.os }}-${{ matrix.arch }}.*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: release-assets
+
+      - name: Display structure of downloaded files
+        run: ls -la release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # Mark as pre-release if version contains hyphen (e.g., v1.0.0-beta)
+          generate_release_notes: true
+          files: |
+            release-assets/*/*
+          body: |
+            ## Civitai API Tester ${{ github.ref_name }}
+            
+            ⚠️  **SECURITY WARNING: DEVELOPMENT/TESTING TOOL ONLY**
+            
+            This application is NOT intended for production use!
+            Do NOT expose this server to the public internet or untrusted networks.
+            This tool is designed for local development and API testing only.
+            
+            ### Downloads
+            
+            Choose the appropriate binary for your system:
+            
+            - **Linux (x64)**: `civitai-tester-linux-amd64.tar.gz`
+            - **Linux (ARM64)**: `civitai-tester-linux-arm64.tar.gz`
+            - **Windows (x64)**: `civitai-tester-windows-amd64.zip`
+            - **Windows (ARM64)**: `civitai-tester-windows-arm64.zip`
+            - **macOS (Intel)**: `civitai-tester-darwin-amd64.tar.gz`
+            - **macOS (Apple Silicon)**: `civitai-tester-darwin-arm64.tar.gz`
+            
+            ### Installation
+            
+            1. Download the appropriate archive for your system
+            2. Extract the contents
+            3. Copy `config.example.json` to `config.json` and configure as needed
+            4. Run the binary: `./civitai-tester` (Linux/macOS) or `civitai-tester.exe` (Windows)
+            5. Open your browser to `http://localhost:9999`
+            
+            ### What's Included
+            
+            - Civitai API Tester binary
+            - Example configuration file
+            - Static web assets (HTML, CSS, JS)
+            - Documentation (README.md)
+            
+            **Remember**: Keep this tool local and secure! 🔒
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup:
+    name: Cleanup
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Delete artifacts
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: |
+            civitai-tester-*
