@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write  # Required to create releases and upload assets
   packages: write  # Required for package registry access
-  actions: read    # Required to read workflow artifacts
+  actions: write   # Required to read and delete workflow artifacts
 
 jobs:
   build:
@@ -166,7 +166,7 @@ jobs:
     name: Cleanup
     needs: [build, release]
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && needs.build.result == 'success'
     
     steps:
       - name: Delete artifacts
@@ -174,3 +174,5 @@ jobs:
         with:
           name: |
             civitai-tester-*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          failOnError: false
